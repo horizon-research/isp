@@ -9,16 +9,16 @@ np.set_printoptions(threshold=sys.maxsize)
 
 def print_metadata(raw):
   print(raw.color_matrix)
-  print(raw.color_desc)
+  #print(raw.color_desc)
   #print(raw.rgb_xyz_matrix)
-  print(raw.raw_type)
+  #print(raw.raw_type)
   #print(raw.white_level)
-  print(raw.raw_pattern)
+  #print(raw.raw_pattern)
   #print(raw.num_colors)
   print(raw.camera_whitebalance)
-  print(raw.black_level_per_channel)
+  #print(raw.black_level_per_channel)
   #print(raw.camera_white_level_per_channel)
-
+  
 def extract_thumb(raw):
   try:
       thumb = raw.extract_thumb()
@@ -54,13 +54,17 @@ def apply_wb_gain(raw, gs_img):
 
 # create bayer-domain raw image that can be displayed as RGB image
 def gen_bayer_rgb_img(raw, gs_img):
-  raw_color_index = raw.raw_colors
+  # raw.raw_colors is a numerical mask; we instead generate a char mask so that we can check R/G/B by names
+  color_desc = np.frombuffer(raw.color_desc, dtype=np.byte) # e.g., RGBG
+  cfa_pattern = np.array(raw.raw_pattern) # e.g., 2310
+  cfa_pattern_rgb = np.array([[color_desc[cfa_pattern[0, 0]], color_desc[cfa_pattern[0, 1]]],
+                             [color_desc[cfa_pattern[1, 0]], color_desc[cfa_pattern[1, 1]]]])
+  raw_color_index = np.tile(cfa_pattern_rgb, (raw.raw_image.shape[0]//2, raw.raw_image.shape[1]//2))
 
   ##https://stackoverflow.com/questions/19766757/replacing-numpy-elements-if-condition-is-met
-  r_channel = np.where(raw_color_index == 0, gs_img, 0)
-  g_channel = np.where(raw_color_index == 1, gs_img, 0)
-  g_channel = np.where(raw_color_index == 3, gs_img, g_channel)
-  b_channel = np.where(raw_color_index == 2, gs_img, 0)
+  r_channel = np.where(raw_color_index == ord('R'), gs_img, 0)
+  g_channel = np.where(raw_color_index == ord('G'), gs_img, 0)
+  b_channel = np.where(raw_color_index == ord('B'), gs_img, 0)
   
   #https://hausetutorials.netlify.app/posts/2019-12-20-numpy-reshape/
   color_img = np.stack((r_channel, g_channel, b_channel)).transpose((1, 2, 0))
@@ -130,7 +134,8 @@ def main():
   extract_thumb(raw)
   gs_img = subtract_bl_norm(raw, raw_img)
   #gs_img = apply_wb_gain(raw, gs_img)
-  #gen_bayer_rgb_img(raw, gs_img)
+  gen_bayer_rgb_img(raw, gs_img)
+  sys.exit()
   demosaic_img = demosaic(gs_img)
   color_img = apply_wb_cc(raw, demosaic_img, raw_img)
   apply_gamma(color_img)
