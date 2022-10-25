@@ -4,7 +4,7 @@ import numpy as np
 import sys
 from PIL import Image
 from colour_demosaicing import demosaicing_CFA_Bayer_bilinear
-#from scipy.interpolate import interp1d
+from scipy import interpolate
 
 np.set_printoptions(threshold=sys.maxsize)
 
@@ -15,6 +15,10 @@ class image_signal_processing:
     self.raw = rawpy.imread(sys.argv[1])
     # raw_img is a np array
     self.raw_img = self.raw.raw_image
+    print(self.raw_img.shape)
+
+    self.lens_sm = np.array(imageio.imread(sys.argv[2]))
+    print(self.lens_sm.shape)
 
   def create_cfa_indices(self):
     # raw.raw_colors is a numerical mask; we instead generate a char mask so that we can check R/G/B by names
@@ -67,6 +71,7 @@ class image_signal_processing:
 
   # apply wb gains; could either do here or multiply the wb matrix after demosaic; equivalent for bilinear filtering
   def apply_wb_gain(self):
+    # TODO
     self.gs_img = np.where(self.raw_color_index == 0, self.gs_img * self.raw.camera_whitebalance[0], self.gs_img)
     self.gs_img = np.where(self.raw_color_index == 1, self.gs_img * self.raw.camera_whitebalance[1], self.gs_img)
     self.gs_img = np.where(self.raw_color_index == 3, self.gs_img * self.raw.camera_whitebalance[1], self.gs_img)
@@ -83,6 +88,33 @@ class image_signal_processing:
 
     #https://hausetutorials.netlify.app/posts/2019-12-20-numpy-reshape/
     self.bayer_color_img = np.stack((r_channel, g_channel, b_channel), axis=2)
+
+  def lens_shading_correction(self):
+    print("Lens shading correction")
+
+    x = np.append(np.arange(0, self.raw_img.shape[0] - 1,
+        (self.raw_img.shape[0] - 1)/(self.lens_sm.shape[0] - 1)), [self.raw_img.shape[0] - 1])
+    y = np.append(np.arange(0, self.raw_img.shape[1] - 1,
+        (self.raw_img.shape[1] - 1)/(self.lens_sm.shape[1] - 1)), [self.raw_img.shape[1] - 1])
+    #print(x, y)
+
+    # When on a regular grid with x.size = m and y.size = n, if z.ndim == 2, then z must have shape (n, m)
+    f = interpolate.interp2d(y, x, self.lens_sm[:,:,0], kind='quintic')
+    lens_sm_r = f(np.arange(0, self.raw_img.shape[1], 1), np.arange(0, self.raw_img.shape[0], 1))
+    f = interpolate.interp2d(y, x, self.lens_sm[:,:,1], kind='quintic')
+    lens_sm_g_red = f(np.arange(0, self.raw_img.shape[1], 1), np.arange(0, self.raw_img.shape[0], 1))
+    f = interpolate.interp2d(y, x, self.lens_sm[:,:,2], kind='quintic')
+    lens_sm_g_blue = f(np.arange(0, self.raw_img.shape[1], 1), np.arange(0, self.raw_img.shape[0], 1))
+    f = interpolate.interp2d(y, x, self.lens_sm[:,:,3], kind='quintic')
+    lens_sm_b = f(np.arange(0, self.raw_img.shape[1], 1), np.arange(0, self.raw_img.shape[0], 1))
+
+    #print(self.gs_img[0:5,0:5])
+    # TODO
+    self.gs_img = np.where(self.raw_color_index == ord('R'), self.gs_img * lens_sm_r, self.gs_img)
+    self.gs_img = np.where(self.raw_color_index == ord('G'), self.gs_img * lens_sm_g_red, self.gs_img)
+    self.gs_img = np.where(self.raw_color_index == ord('B'), self.gs_img * lens_sm_b, self.gs_img)
+    #print(self.gs_img[0:5,0:5])
+    #sys.exit()
 
   # demosaic
   def demosaic(self):
@@ -135,28 +167,11 @@ class image_signal_processing:
   def tone_mapping(self):
     print("Tone Mapping")
 
-    #x = [0, 0.8, 0.9, 1]
-    #y = [0, 0.95, 0.975, 1]
-    #tm = interp1d(x, y, kind='cubic')
-
-    # first Reinhard curve
-    #X = self.color_img[:,:,0] * 0.4124564 + self.color_img[:,:,1] * 0.3575761 + self.color_img[:,:,2] * 0.1804375
-    #luminance = self.color_img[:,:,0] * 0.2126729 + self.color_img[:,:,1] * 0.7151522 + self.color_img[:,:,2] * 0.0721750
-    #Z = self.color_img[:,:,0] * 0.0193339 + self.color_img[:,:,1] * 0.1191920 + self.color_img[:,:,2] * 0.9503041
-    #l_avg = np.average(luminance)
-    #l_adj = luminance / (9.6 * l_avg + 0.0001)
-    #l_out = l_adj / (1 + l_adj)
-    #print(luminance[0:3,0:3])
-    #print(l_out[0:3,0:3])
-    #R = X * 3.2404542 + l_out * -1.5371385 + Z * -0.4985314
-    #G = X * -0.9692660 + l_out * 1.8760108 + Z * 0.0415560
-    #B = X * 0.0556434 + l_out * -0.2040259 + Z * 1.0572252
-    #self.color_img = np.stack((R, G, B), axis=2)
-
     # simple mapper
     i = self.color_img < 0.5
     j = np.logical_not(i)
     self.color_img[i] = self.color_img[i] * (1 / 0.5)
+    self.color_img[i] = self.color_img[i] ** (1/1.2)
     self.color_img[j] = 1
 
     #print(self.color_img[self.color_img > 1])
@@ -187,6 +202,7 @@ def main():
   isp.extract_metadata()
   #isp.extract_thumb()
   isp.subtract_bl_norm()
+  isp.lens_shading_correction()
   #isp.apply_wb_gain()
   #isp.gen_bayer_rgb_img()
   isp.demosaic()
