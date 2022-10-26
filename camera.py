@@ -17,16 +17,32 @@ class image_signal_processing:
     self.raw_img = self.raw.raw_image
     print(self.raw_img.shape)
 
-    self.lens_sm = np.array(imageio.imread(sys.argv[2]))
-    print(self.lens_sm.shape)
+    if (len(sys.argv) > 2):
+      self.lens_sm = np.array(imageio.imread(sys.argv[2]))
+      print(self.lens_sm.shape)
 
   def create_cfa_indices(self):
     # raw.raw_colors is a numerical mask; we instead generate a char mask so that we can check R/G/B by names
-    color_desc = np.frombuffer(self.raw.color_desc, dtype=np.byte) # e.g., RGBG
-    cfa_pattern_id = np.array(self.raw.raw_pattern) # e.g., 2310
-    cfa_pattern_rgb = np.array([[color_desc[cfa_pattern_id[0, 0]], color_desc[cfa_pattern_id[0, 1]]],
-                                [color_desc[cfa_pattern_id[1, 0]], color_desc[cfa_pattern_id[1, 1]]]])
-    self.raw_color_index = np.tile(cfa_pattern_rgb, (self.raw.raw_image.shape[0]//2, self.raw.raw_image.shape[1]//2))
+
+    # this is based on spatial raster order on the CFA; 01/32 on iPhone; 23/10 on Pixel
+    cfa_pattern_id = np.array(self.raw.raw_pattern)
+    # this is baesd on numerical order above; RGBG on iPhone; RGBG on Pixel; 
+    color_desc = np.frombuffer(self.raw.color_desc, dtype=np.byte)
+
+    # this tile is based on the raster order
+    # https://stackoverflow.com/questions/14639496/how-to-create-a-numpy-array-of-arbitrary-length-strings
+    tile_pattern = np.array([[chr(color_desc[cfa_pattern_id[0, 0]]), chr(color_desc[cfa_pattern_id[0, 1]])],
+                             [chr(color_desc[cfa_pattern_id[1, 0]]), chr(color_desc[cfa_pattern_id[1, 1]])]], dtype=object)
+    self.cfa_pattern_rgb = np.array(tile_pattern, copy=True) # make a deep copy
+
+    # generate GR and GB (for lens shading correction later)
+    for i in range(2):
+      for j in range(2):
+        if (tile_pattern[i,j] == 'G'):
+          tile_pattern[i,j] = 'G' + tile_pattern[i,(j+1)%2]
+    print(tile_pattern)
+
+    self.raw_color_index = np.tile(tile_pattern, (self.raw.raw_image.shape[0]//2, self.raw.raw_image.shape[1]//2))
 
   def extract_metadata(self):
     print("Extract metadata")
@@ -71,25 +87,27 @@ class image_signal_processing:
 
   # apply wb gains; could either do here or multiply the wb matrix after demosaic; equivalent for bilinear filtering
   def apply_wb_gain(self):
-    # TODO
-    self.gs_img = np.where(self.raw_color_index == 0, self.gs_img * self.raw.camera_whitebalance[0], self.gs_img)
-    self.gs_img = np.where(self.raw_color_index == 1, self.gs_img * self.raw.camera_whitebalance[1], self.gs_img)
-    self.gs_img = np.where(self.raw_color_index == 3, self.gs_img * self.raw.camera_whitebalance[1], self.gs_img)
-    self.gs_img = np.where(self.raw_color_index == 2, self.gs_img * self.raw.camera_whitebalance[2], self.gs_img)
+    self.gs_img = np.where(self.raw_color_index == 'R', self.gs_img * self.raw.camera_whitebalance[0], self.gs_img)
+    self.gs_img = np.where(self.raw_color_index == 'GR', self.gs_img * self.raw.camera_whitebalance[1], self.gs_img)
+    self.gs_img = np.where(self.raw_color_index == 'GB', self.gs_img * self.raw.camera_whitebalance[1], self.gs_img)
+    self.gs_img = np.where(self.raw_color_index == 'B', self.gs_img * self.raw.camera_whitebalance[2], self.gs_img)
 
   # create bayer-domain raw image that can be displayed as RGB image
   def gen_bayer_rgb_img(self):
     print("Generate RGB image in Bayer domain")
 
     ##https://stackoverflow.com/questions/19766757/replacing-numpy-elements-if-condition-is-met
-    r_channel = np.where(self.raw_color_index == ord('R'), self.gs_img, 0)
-    g_channel = np.where(self.raw_color_index == ord('G'), self.gs_img, 0)
-    b_channel = np.where(self.raw_color_index == ord('B'), self.gs_img, 0)
+    r_channel = np.where(self.raw_color_index == 'R', self.gs_img, 0)
+    g_channel = np.where(((self.raw_color_index == 'GR') | (self.raw_color_index == 'GB')), self.gs_img, 0)
+    b_channel = np.where(self.raw_color_index == 'B', self.gs_img, 0)
 
     #https://hausetutorials.netlify.app/posts/2019-12-20-numpy-reshape/
     self.bayer_color_img = np.stack((r_channel, g_channel, b_channel), axis=2)
 
   def lens_shading_correction(self):
+    if (not hasattr(self, 'lens_sm')):
+      return
+
     print("Lens shading correction")
 
     x = np.append(np.arange(0, self.raw_img.shape[0] - 1,
@@ -109,12 +127,11 @@ class image_signal_processing:
     lens_sm_b = f(np.arange(0, self.raw_img.shape[1], 1), np.arange(0, self.raw_img.shape[0], 1))
 
     #print(self.gs_img[0:5,0:5])
-    # TODO
-    self.gs_img = np.where(self.raw_color_index == ord('R'), self.gs_img * lens_sm_r, self.gs_img)
-    self.gs_img = np.where(self.raw_color_index == ord('G'), self.gs_img * lens_sm_g_red, self.gs_img)
-    self.gs_img = np.where(self.raw_color_index == ord('B'), self.gs_img * lens_sm_b, self.gs_img)
+    self.gs_img = np.where(self.raw_color_index == 'R', self.gs_img * lens_sm_r, self.gs_img)
+    self.gs_img = np.where(self.raw_color_index == 'GR', self.gs_img * lens_sm_g_red, self.gs_img)
+    self.gs_img = np.where(self.raw_color_index == 'GB', self.gs_img * lens_sm_g_blue, self.gs_img)
+    self.gs_img = np.where(self.raw_color_index == 'B', self.gs_img * lens_sm_b, self.gs_img)
     #print(self.gs_img[0:5,0:5])
-    #sys.exit()
 
   # demosaic
   def demosaic(self):
@@ -122,9 +139,9 @@ class image_signal_processing:
 
     #https://colour-demosaicing.readthedocs.io/en/latest/generated/colour_demosaicing.demosaicing_CFA_Bayer_bilinear.html#colour_demosaicing.demosaicing_CFA_Bayer_bilinear
 
-    # RGGB for iPhone; BGGR for Pixel
-    cfa_pattern_char = bytes(self.raw_color_index[0:2,0:2].flatten()).decode()
+    cfa_pattern_char = "".join(self.cfa_pattern_rgb.flatten())
 
+    # this expects spatial raster order on the CFA; RGGB for iPhone; BGGR for Pixel
     self.demosaic_img = demosaicing_CFA_Bayer_bilinear(self.gs_img, cfa_pattern_char)
 
   # white balance and color correction
@@ -192,8 +209,8 @@ class image_signal_processing:
 
     # save raw bayer-domain image as a gray-scale image
     #Image.fromarray((self.gs_img * 256).astype(np.uint8)).save("gs.png")
-    #Image.fromarray((self.bayer_color_img * 256).astype(np.uint8), 'RGB').save("bayer.png")
-    #Image.fromarray((self.demosaic_img * 256).astype(np.uint8), 'RGB').save("demosaic.png")
+    Image.fromarray((self.bayer_color_img * 256).astype(np.uint8), 'RGB').save("bayer.png")
+    Image.fromarray((self.demosaic_img * 256).astype(np.uint8), 'RGB').save("demosaic.png")
     Image.fromarray((self.color_img * 256).astype(np.uint8), 'RGB').save("color.png")
 
 def main():
@@ -204,7 +221,7 @@ def main():
   isp.subtract_bl_norm()
   isp.lens_shading_correction()
   #isp.apply_wb_gain()
-  #isp.gen_bayer_rgb_img()
+  isp.gen_bayer_rgb_img()
   isp.demosaic()
   isp.apply_wb_cc()
   isp.tone_mapping()
