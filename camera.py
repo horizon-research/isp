@@ -2,23 +2,41 @@ import rawpy
 import imageio
 import numpy as np
 import sys
+import argparse
 from PIL import Image
 from colour_demosaicing import demosaicing_CFA_Bayer_bilinear
 from scipy import interpolate
 
 np.set_printoptions(threshold=sys.maxsize)
 
+def parseArg():
+  parser = argparse.ArgumentParser()
+  parser.add_argument('-sg', action='store_true', help='save bayer-domain image as gray-scale image')
+  parser.add_argument('-sb', action='store_true', help='save bayer-domain image as RGB image')
+  parser.add_argument('-sd', action='store_true', help='save demosaic-ed image')
+  parser.add_argument('-sc', action='store_true', help='save final RGB image')
+  parser.add_argument('-et', action='store_true', help='extract thumb JPEG file if exists')
+
+  parser.add_argument('-im', type=str, required=True, help='input image path')
+  parser.add_argument('-lm', type=str, required=False, help='optional lens shading correction map path')
+  parser.add_argument('-cm', type=str, required=False, help='optional color correction matrix math')
+
+  args = parser.parse_args()
+  return args
+
 class image_signal_processing:
   def __init__(self):
     print("Read image")
 
-    self.raw = rawpy.imread(sys.argv[1])
+    self.args = parseArg()
+
+    self.raw = rawpy.imread(self.args.im)
     # raw_img is a np array
     self.raw_img = self.raw.raw_image
     print(self.raw_img.shape)
 
-    if (len(sys.argv) > 2):
-      self.lens_sm = np.array(imageio.imread(sys.argv[2]))
+    if (self.args.lm):
+      self.lens_sm = np.array(imageio.imread(self.args.lm))
       print(self.lens_sm.shape)
 
   def create_cfa_indices(self):
@@ -48,18 +66,22 @@ class image_signal_processing:
     print("Extract metadata")
 
     #https://letmaik.github.io/rawpy/api/rawpy.RawPy.html
-    print(self.raw.color_matrix)
+    ###print(self.raw.color_matrix)
+    ###print(self.raw.camera_whitebalance)
+
     #print(self.raw.color_desc)
     #print(self.raw.rgb_xyz_matrix)
     #print(self.raw.raw_type)
     #print(self.raw.white_level)
     #print(self.raw.raw_pattern)
     #print(self.raw.num_colors)
-    print(self.raw.camera_whitebalance)
     #print(self.raw.black_level_per_channel)
     #print(self.raw.camera_white_level_per_channel)
 
     self.create_cfa_indices()
+
+    if (self.args.et):
+      self.extract_thumb()
 
   def extract_thumb(self):
     print("Extract thumbnail")
@@ -94,8 +116,6 @@ class image_signal_processing:
 
   # create bayer-domain raw image that can be displayed as RGB image
   def gen_bayer_rgb_img(self):
-    print("Generate RGB image in Bayer domain")
-
     ##https://stackoverflow.com/questions/19766757/replacing-numpy-elements-if-condition-is-met
     r_channel = np.where(self.raw_color_index == 'R', self.gs_img, 0)
     g_channel = np.where(((self.raw_color_index == 'GR') | (self.raw_color_index == 'GB')), self.gs_img, 0)
@@ -104,8 +124,9 @@ class image_signal_processing:
     #https://hausetutorials.netlify.app/posts/2019-12-20-numpy-reshape/
     self.bayer_color_img = np.stack((r_channel, g_channel, b_channel), axis=2)
 
+  # https://developer.android.com/reference/android/hardware/camera2/CaptureResult#STATISTICS_LENS_SHADING_CORRECTION_MAP
   def lens_shading_correction(self):
-    if (not hasattr(self, 'lens_sm')):
+    if (not self.args.lm):
       return
 
     print("Lens shading correction")
@@ -114,7 +135,6 @@ class image_signal_processing:
         (self.raw_img.shape[0] - 1)/(self.lens_sm.shape[0] - 1)), [self.raw_img.shape[0] - 1])
     y = np.append(np.arange(0, self.raw_img.shape[1] - 1,
         (self.raw_img.shape[1] - 1)/(self.lens_sm.shape[1] - 1)), [self.raw_img.shape[1] - 1])
-    #print(x, y)
 
     # When on a regular grid with x.size = m and y.size = n, if z.ndim == 2, then z must have shape (n, m)
     f = interpolate.interp2d(y, x, self.lens_sm[:,:,0], kind='quintic')
@@ -144,6 +164,11 @@ class image_signal_processing:
     # this expects spatial raster order on the CFA; RGGB for iPhone; BGGR for Pixel
     self.demosaic_img = demosaicing_CFA_Bayer_bilinear(self.gs_img, cfa_pattern_char)
 
+  def extractCCM(self):
+    with open(self.args.cm) as ccm_file:
+      for line in ccm_file:
+        return np.asarray(line.split()).astype(np.float).reshape(3, 3)
+
   # white balance and color correction
   # using the method where we first apply a rotation matrix to normalize to the
   # capture white point and then apply the correction matrix, which does the
@@ -167,15 +192,13 @@ class image_signal_processing:
     #print(flat_img[:, 1000:1005])
 
     # cc
-    # From photo
-    cc_mat = self.raw.color_matrix[0:3, 0:3]
-    # Tree
-    #cc_mat = np.array([[1.6640625, -0.6796875, 0.0078125], [-0.1484375, 1.3046875, -0.1484375], [0.109375, -0.7421875, 1.640625]])
-    # Person
-    #cc_mat = np.array([[1.6328125, -0.6171875, -0.015625], [-0.171875, 1.3828125, -0.2109375], [0.125, -0.8046875, 1.6796875]])
+    if (self.args.cm):
+      cc_mat = self.extractCCM()
+    else:
+      cc_mat = self.raw.color_matrix[0:3, 0:3]
 
     flat_img = np.clip(np.matmul(cc_mat, flat_img), 0, 1)
-    print(flat_img[:, 1000:1005])
+    #print(flat_img[:, 1000:1005])
 
     self.color_img = np.stack((flat_img[0].reshape(self.raw_img.shape[0], self.raw_img.shape[1]),
                                flat_img[1].reshape(self.raw_img.shape[0], self.raw_img.shape[1]),
@@ -207,21 +230,28 @@ class image_signal_processing:
   def save_images(self):
     print("Save images")
 
-    # save raw bayer-domain image as a gray-scale image
-    #Image.fromarray((self.gs_img * 256).astype(np.uint8)).save("gs.png")
-    Image.fromarray((self.bayer_color_img * 256).astype(np.uint8), 'RGB').save("bayer.png")
-    Image.fromarray((self.demosaic_img * 256).astype(np.uint8), 'RGB').save("demosaic.png")
-    Image.fromarray((self.color_img * 256).astype(np.uint8), 'RGB').save("color.png")
+    if (self.args.sg):
+      # save raw bayer-domain image as a gray-scale image
+      Image.fromarray((self.gs_img * 256).astype(np.uint8)).save("gs.png")
+
+    if (self.args.sb):
+      self.gen_bayer_rgb_img()
+      Image.fromarray((self.bayer_color_img * 256).astype(np.uint8), 'RGB').save("bayer.png")
+
+    if (self.args.sd):
+      Image.fromarray((self.demosaic_img * 256).astype(np.uint8), 'RGB').save("demosaic.png")
+
+    if (self.args.sc):
+      Image.fromarray((self.color_img * 256).astype(np.uint8), 'RGB').save("color.png")
 
 def main():
+  parseArg()
   isp = image_signal_processing()
 
   isp.extract_metadata()
-  #isp.extract_thumb()
   isp.subtract_bl_norm()
   isp.lens_shading_correction()
   #isp.apply_wb_gain()
-  isp.gen_bayer_rgb_img()
   isp.demosaic()
   isp.apply_wb_cc()
   isp.tone_mapping()
