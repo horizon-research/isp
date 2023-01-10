@@ -208,13 +208,16 @@ class image_signal_processing:
     print("Tone Mapping")
 
     # simple mapper
-    i = self.color_img < 0.5
-    j = np.logical_not(i)
-    self.color_img[i] = self.color_img[i] * (1 / 0.5)
-    self.color_img[i] = self.color_img[i] ** (1/1.2)
-    self.color_img[j] = 1
+    #i = self.color_img < 0.5
+    #j = np.logical_not(i)
+    #self.color_img[i] = self.color_img[i] * (1 / 0.5)
+    #self.color_img[i] = self.color_img[i] ** (1/1.2)
+    #self.color_img[j] = 1
 
     #print(self.color_img[self.color_img > 1])
+
+    # y = 3x^2 - 2^x3
+    #self.color_img = 3 * self.color_img ** 2 - 2 * self.color_img ** 3
 
   # apply gamma and save image
   def apply_gamma(self):
